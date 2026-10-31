@@ -1,0 +1,19 @@
+{
+  "name": "server-cf",
+  "main": "worker.js",
+  "compatibility_date": "2026-10-31",
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "CANVAS",
+        "class_name": "Canvas"
+      }
+    ]
+  },
+  "exports": {
+    "Canvas": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    }
+  }
+}
