@@ -1,8 +1,42 @@
 import { DurableObject } from "cloudflare:workers";
 export default {
   async fetch(request, env) {
-    if (new URL(request.url).pathname.startsWith("/sql/"))
-      return env.CANVAS.getByName("community").fetch(request);
+    const path = new URL(request.url).pathname;
+    if (path.startsWith("/help")) {
+      return new Response(`<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Bobubi AI Instructions</title>
+</head>
+<body>
+<h1>Bobubi Community Canvas — AI Instructions</h1>
+<p>Bobubi is a shared, persistent drawing canvas. Humans draw using the website's Canvas interface, while AI agents can read and modify the same drawing through HTTP requests.</p>
+<p>Drawing data consists of straight-line segments, each represented by four normalized coordinates: x1,y1,x2,y2. Coordinates range from 0 to 1.</p>
+<h2>Important URLs</h2>
+<p><b>Read:</b> GET https://bobubi.org/sql/read</p>
+<p>Returns plain text, one segment per line. An empty response means the canvas currently contains no segments.</p>
+<p><b>Append:</b> POST https://bobubi.org/sql/append</p>
+<p>Send plain text, one comma-separated segment per line. Coordinates must be between 0 and 1. Existing content is preserved. Each appended segment is a separate straight line; multiple segments can be used to construct shapes.</p>
+<p><b>Clear:</b> POST https://bobubi.org/sql/clear</p>
+<p>Deletes the entire shared drawing.</p>
+<h2>Important</h2>
+<ul>
+<li>Humans and AI share the same drawing.</li>
+<li>Appended segments are immediately broadcast to connected browsers.</li>
+<li>Drawing data persists between visits.</li>
+<li>Read the existing drawing before modifying it.</li>
+<li>Clearing affects everyone and should only be done when explicitly requested.</li>
+</ul>
+</body>
+</html>`, {
+    headers: {
+      "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "no-store"
+    }
+  });
+}
+    if (path.startsWith("/sql/")) return env.CANVAS.getByName("community").fetch(request);
     return new Response(`<!DOCTYPE html>
 <html>
 <head>
@@ -111,10 +145,9 @@ export class Canvas extends DurableObject {
   }
 
   async fetch(request) {
+    const path = new URL(request.url).pathname;
 
-    const url = new URL(request.url);
-
-    if (url.pathname === "/sql/read" && request.method === "GET") {
+    if (path === "/sql/read" && request.method === "GET") {
       const rows = this.sql.exec(
         "SELECT data FROM strokes ORDER BY id"
       ).toArray();
@@ -126,7 +159,7 @@ export class Canvas extends DurableObject {
       );
     }
 
-    if (url.pathname === "/sql/append" && request.method === "POST") {
+    if (path === "/sql/append" && request.method === "POST") {
       const body = await request.text();
       if (!body.trim()) return new Response("Empty Append OK");
       const lines = body.trim().split(/\r?\n/);
@@ -153,14 +186,14 @@ export class Canvas extends DurableObject {
       return new Response("Append OK");
     }
 
-    if (url.pathname === "/sql/clear" && request.method === "POST") {
+    if (path === "/sql/clear" && request.method === "POST") {
       this.sql.exec("DELETE FROM strokes");
       const m = {type:"clear"};
       for (const socket of this.ctx.getWebSockets()) if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(m));
       return new Response("Clear OK");
     }
 
-    if (url.pathname !== "/sql/ws" || request.headers.get("Upgrade") !== "websocket")
+    if (path !== "/sql/ws" || request.headers.get("Upgrade") !== "websocket")
       return new Response("Not Found", {status:404});
 
     const pair = new WebSocketPair();
