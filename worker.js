@@ -1,10 +1,8 @@
 import { DurableObject } from "cloudflare:workers";
-
 export default {
   async fetch(request, env) {
-    if (new URL(request.url).pathname === "/ws")
+    if (new URL(request.url).pathname.startsWith("/sql/"))
       return env.CANVAS.getByName("community").fetch(request);
-
     return new Response(`<!DOCTYPE html>
 <html>
 <head>
@@ -43,7 +41,7 @@ function redraw() {
 window.onresize=redraw;
 redraw();
 
-const ws=new WebSocket((location.protocol==="https:"?"wss://":"ws://")+location.host+"/ws");
+const ws=new WebSocket((location.protocol==="https:"?"wss://":"ws://")+location.host+"/sql/ws");
 
 ws.onmessage=e=>{
   const m=JSON.parse(e.data);
@@ -52,6 +50,11 @@ ws.onmessage=e=>{
     strokes=m.strokes;
     ready=true;
     redraw();
+  }
+
+  if(m.type==="lines") {
+    strokes.push(...m.lines);
+    m.lines.forEach(draw);
   }
 
   if(m.type==="line") {
@@ -94,7 +97,7 @@ document.getElementById("clear").onclick=()=>{
 };
 </script>
 </body>
-</html>`, {headers:{"Content-Type":"text/html; charset=utf-8"}});
+</html>`, {headers:{"Content-Type":"text/html; charset=utf-8", "Cache-Control": "no-store"}});
   }
 };
 
@@ -107,9 +110,58 @@ export class Canvas extends DurableObject {
     );
   }
 
-  fetch(request) {
-    if (request.headers.get("Upgrade") !== "websocket")
-      return new Response("Expected WebSocket", {status:400});
+  async fetch(request) {
+
+    const url = new URL(request.url);
+
+    if (url.pathname === "/sql/read" && request.method === "GET") {
+      const rows = this.sql.exec(
+        "SELECT data FROM strokes ORDER BY id"
+      ).toArray();
+
+      return new Response(
+        rows.map(row => JSON.parse(row.data).join(",")).join("\n"),
+        {headers: {"Content-Type": "text/plain; charset=utf-8",
+                   "Cache-Control": "no-store"}}
+      );
+    }
+
+    if (url.pathname === "/sql/append" && request.method === "POST") {
+      const body = await request.text();
+      if (!body.trim()) return new Response("Empty Append OK");
+      const lines = body.trim().split(/\r?\n/);
+
+      const parsed = lines.map(line => line.split(",").map(Number));
+
+      if (!parsed.length || parsed.some(coords =>
+        coords.length !== 4 ||
+        !coords.every(n => Number.isFinite(n) && n >= 0 && n <= 1)
+      )) {
+        return new Response("Invalid coordinates", {status: 400});
+      }
+
+      for (const coords of parsed) {
+        this.sql.exec(
+          "INSERT INTO strokes (data) VALUES (?)",
+          JSON.stringify(coords)
+        );
+      }
+
+      const m = {type:"lines", lines:parsed};
+      for (const socket of this.ctx.getWebSockets()) if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(m));
+
+      return new Response("Append OK");
+    }
+
+    if (url.pathname === "/sql/clear" && request.method === "POST") {
+      this.sql.exec("DELETE FROM strokes");
+      const m = {type:"clear"};
+      for (const socket of this.ctx.getWebSockets()) if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(m));
+      return new Response("Clear OK");
+    }
+
+    if (url.pathname !== "/sql/ws" || request.headers.get("Upgrade") !== "websocket")
+      return new Response("Not Found", {status:404});
 
     const pair = new WebSocketPair();
     this.ctx.acceptWebSocket(pair[1]);
@@ -135,23 +187,15 @@ export class Canvas extends DurableObject {
         m.line.length === 4 &&
         m.line.every(Number.isFinite) &&
         m.line.every(n => n >= 0 && n <= 1)) {
-
       this.sql.exec(
         "INSERT INTO strokes (data) VALUES (?)",
         JSON.stringify(m.line)
       );
-
-      for (const socket of this.ctx.getWebSockets())
-        if (socket !== ws && socket.readyState === WebSocket.OPEN)
-          socket.send(JSON.stringify(m));
+      for (const socket of this.ctx.getWebSockets()) if (socket !== ws && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(m));
     }
-
     if (m.type === "clear") {
       this.sql.exec("DELETE FROM strokes");
-
-      for (const socket of this.ctx.getWebSockets())
-        if (socket.readyState === WebSocket.OPEN)
-          socket.send(JSON.stringify(m));
+      for (const socket of this.ctx.getWebSockets()) if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(m));
     }
   }
 }
