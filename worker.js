@@ -18,7 +18,7 @@ export default {
 <h2>Four recommended operations</h2>
 <p>AI agents should normally limit themselves to these same four operations available to human users:</p>
 <ul>
-<li><b>Read:</b> <code>/sql/read?mode=all</code> — returns all lines as a JSON array.</li>
+<li><b>Read:</b> <code>/sql/read?mode=all</code> — returns all lines as a JSON array (or add &html to request an HTML response instead).</li>
 <li><b>Get Max:</b> <code>/sql/read?mode=max</code> — gets the maximum rowid used by append to detect stale requests.</li>
 <li><b>Append:</b> <code>/sql/append</code> — appends one or more lines without replacing existing lines. Requires <code>from</code> and <code>data</code> parameters. The <code>from</code> value must equal the current maximum rowid (0 if empty) or else Error 409 results.</li>
 <li><b>Clear:</b> <code>/sql/delete</code> — deletes the entire drawing. Only do this when explicitly requested.</li>
@@ -167,6 +167,21 @@ document.getElementById("clear").onclick=()=>{
   }
 };
 
+const html_prefix =
+`<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>data</title>
+</head>
+<body>
+<pre>`
+
+const html_postfix =
+`</pre>
+</body>
+</html>`
+
 const maxAppend = 500;
 export class Canvas extends DurableObject {
   constructor(ctx, env) {
@@ -176,11 +191,15 @@ export class Canvas extends DurableObject {
   }
 
   // HTTP response helpers
-  response(data, status = 200) {
-    return new Response(JSON.stringify(data), {
+  response(data, html = false, status = 200) {
+    const json = JSON.stringify(data);
+    const body = html
+      ? html_prefix + json.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") + html_postfix
+      : json;
+    return new Response(body, {
       status,
       headers: {
-        "Content-Type": "application/json; charset=utf-8",
+        "Content-Type": html ? "text/html; charset=utf-8" : "application/json; charset=utf-8",
         "Cache-Control": "no-store"
       }
     });
@@ -213,13 +232,15 @@ export class Canvas extends DurableObject {
       return new Response(null, {status:101, webSocket:pair[0]});
     }
 
-    if (!["GET", "POST"].includes(request.method)) return new Response("Method Not Allowed", {status:405});
     let posting = request.method === "GET" ? url.search.slice(1) : await request.text();
     if (!posting) {const i = path.indexOf("Q"); if (i !== -1) posting = path.slice(i + 1)
       .replace(/E/g, "=").replace(/A/g, "&").replace(/L/g, "[").replace(/R/g, "]")
       .replace(/C/g, ",").replace(/P/g, ".").replace(/M/g, "-");}
     const params = new URLSearchParams(posting);
+    const html = params.has("html");
     const number = name => {const value = params.get(name); return value !== null && /^\d+$/.test(value) ? Number(value) : null;};
+    if (!["GET", "POST"].includes(request.method)) return this.response("Method Not Allowed", html, 405);
+
 
     // SELECT: 6 variations
     if (path.startsWith("/sql/read")) {
@@ -227,31 +248,31 @@ export class Canvas extends DurableObject {
       const from = number("from");
       const to = number("to");
       if (mode === "range" || mode === "rowid-range") {
-        if (from === null || to === null || from > to) return this.response("Invalid read range", 400);
+        if (from === null || to === null || from > to) return this.response("Invalid read range", html, 400);
         const rows = this.sql.exec(
           mode === "range" ? "SELECT data FROM strokes WHERE rowid >= ? AND rowid <= ? ORDER BY rowid" :
           "SELECT rowid, data FROM strokes WHERE rowid >= ? AND rowid <= ? ORDER BY rowid",
         from, to).toArray();
-        //return this.response(mode === "rowid-range" ? rows.map(row => ({rowid:row.rowid, data:JSON.parse(row.data)})) : rows.map(row => JSON.parse(row.data)));}
-        return this.response(mode === "rowid-range" ? rows.map(row => [row.rowid, ...JSON.parse(row.data)]) : rows.map(row => JSON.parse(row.data)));}
+        //return this.response(mode === "rowid-range" ? rows.map(row => ({rowid:row.rowid, data:JSON.parse(row.data)})) : rows.map(row => JSON.parse(row.data)), html);}
+        return this.response(mode === "rowid-range" ? rows.map(row => [row.rowid, ...JSON.parse(row.data)]) : rows.map(row => JSON.parse(row.data)), html);}
       if (mode === "all")
-        return this.response(this.snapshot());
+        return this.response(this.snapshot(), html);
       if (mode === "max")
-        return this.response(this.sql.exec("SELECT MAX(rowid) AS maxrowid FROM strokes").toArray()[0].maxrowid ?? 0);
+        return this.response(this.sql.exec("SELECT MAX(rowid) AS maxrowid FROM strokes").toArray()[0].maxrowid ?? 0, html);
       if (mode === "last") {
         const rows = this.sql.exec("SELECT rowid, data FROM strokes ORDER BY rowid DESC LIMIT 1").toArray();
-        //return this.response(rows.length ? {rowid:rows[0].rowid, data:JSON.parse(rows[0].data)} : null);}
-        return this.response(rows.length ? [rows[0].rowid, ...JSON.parse(rows[0].data)] : null);}
+        //return this.response(rows.length ? {rowid:rows[0].rowid, data:JSON.parse(rows[0].data)} : null, html);}
+        return this.response(rows.length ? [rows[0].rowid, ...JSON.parse(rows[0].data)] : null, html);}
       if (mode === "count")
-        return this.response(this.sql.exec("SELECT COUNT(*) AS count FROM strokes").toArray()[0].count);
-      return this.response("Unknown read mode", 400);
+        return this.response(this.sql.exec("SELECT COUNT(*) AS count FROM strokes").toArray()[0].count, html);
+      return this.response("Unknown read mode", html, 400);
     }
 
     // INSERT: 1 VARIATION (allows one or multiple strokes)
     if (path.startsWith("/sql/append")) {
       const from = number("from");
-      let lines; try {lines = JSON.parse(params.get("data").replace(/,\s*([\]}])/g, "$1"));} catch {return this.response("Invalid append JSON data", 400);}
-      if (from === null || !this.validLines(lines)) return this.response("Invalid append parameters (maxAppend=" + maxAppend + ")", 400);
+      let lines; try {lines = JSON.parse(params.get("data").replace(/,\s*([\]}])/g, "$1"));} catch {return this.response("Invalid append JSON data", html, 400);}
+      if (from === null || !this.validLines(lines)) return this.response("Invalid append parameters (maxAppend=" + maxAppend + ")", html, 400);
 
       // Check anchor and insert atomically.
       let current;
@@ -264,9 +285,9 @@ export class Canvas extends DurableObject {
           //this.sql.exec("INSERT INTO strokes (data) VALUES " + lines.map(() => "(?)").join(","), ...lines.map(line => JSON.stringify(line)));}
 
       });
-      if (from !== current) return this.response({error:"Stale anchor", maxrowid:current}, 409);
+      if (from !== current) return this.response("APPEND FAILED — stale anchor; retry using from=" + current, html, 409);
       this.broadcast({type:"lines", lines});
-      return this.response("Append OK");
+      return this.response("Append OK", html);
     }
 
     // DELETE: 3 variations
@@ -274,20 +295,20 @@ export class Canvas extends DurableObject {
       const from = number("from");
       const to = number("to");
       if (from !== null && to !== null) {
-        if (from > to) return this.response("Invalid DELETE range", 400);
+        if (from > to) return this.response("Invalid DELETE range", html, 400);
         this.sql.exec("DELETE FROM strokes WHERE rowid >= ? AND rowid <= ?", from, to);
       } else if (from !== null && to === null) {
         this.sql.exec("DELETE FROM strokes WHERE rowid >= ?", from);
       } else if (from === null && to === null) {
         this.sql.exec("DELETE FROM strokes"); this.broadcast({type:"clear"});
-        return this.response("Clear OK");
+        return this.response("Clear OK", html);
       } else {
-        return this.response("Invalid DELETE parameters", 400);
+        return this.response("Invalid DELETE parameters", html, 400);
       }
       this.broadcast({type:"snapshot", strokes:this.snapshot()});
-      return this.response("Delete OK");
+      return this.response("Delete OK", html);
     }
-    return new Response("Not Found", {status:404});
+    return this.response("Not Found", html, 404);
   }
 
   // WebSocket: 1 INSERT and 1 DELETE variation
