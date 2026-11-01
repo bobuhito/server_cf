@@ -172,7 +172,7 @@ export class Canvas extends DurableObject {
   constructor(ctx, env) {
     super(ctx, env);
     this.sql = ctx.storage.sql;
-    this.sql.exec("CREATE TABLE IF NOT EXISTS strokes (id INTEGER PRIMARY KEY AUTOINCREMENT, data TEXT NOT NULL)");
+    this.sql.exec("CREATE TABLE IF NOT EXISTS strokes (color TEXT NOT NULL, data TEXT NOT NULL)");
   }
 
   // HTTP response helpers
@@ -206,7 +206,7 @@ export class Canvas extends DurableObject {
     const path = url.pathname;
 
     // WebSocket: connection and 1 SELECT all/snapshot variation
-    if (path === "/sql/ws" && request.headers.get("Upgrade") === "websocket") {
+    if (path.startsWith("/sql/ws") && request.headers.get("Upgrade") === "websocket") {
       const pair = new WebSocketPair();
       this.ctx.acceptWebSocket(pair[1]);
       pair[1].send(JSON.stringify({type:"snapshot", strokes:this.snapshot()}));
@@ -214,11 +214,15 @@ export class Canvas extends DurableObject {
     }
 
     if (!["GET", "POST"].includes(request.method)) return new Response("Method Not Allowed", {status:405});
-    const params = new URLSearchParams(request.method === "GET" ? url.search.slice(1) : await request.text());
+    let posting = request.method === "GET" ? url.search.slice(1) : await request.text();
+    if (!posting) {const i = path.indexOf("Q"); if (i !== -1) posting = path.slice(i + 1)
+      .replace(/E/g, "=").replace(/A/g, "&").replace(/L/g, "[").replace(/R/g, "]")
+      .replace(/C/g, ",").replace(/P/g, ".").replace(/M/g, "-");}
+    const params = new URLSearchParams(posting);
     const number = name => {const value = params.get(name); return value !== null && /^\d+$/.test(value) ? Number(value) : null;};
 
     // SELECT: 6 variations
-    if (path === "/sql/read") {
+    if (path.startsWith("/sql/read")) {
       const mode = params.get("mode");
       const from = number("from");
       const to = number("to");
@@ -228,21 +232,23 @@ export class Canvas extends DurableObject {
           mode === "range" ? "SELECT data FROM strokes WHERE rowid >= ? AND rowid <= ? ORDER BY rowid" :
           "SELECT rowid, data FROM strokes WHERE rowid >= ? AND rowid <= ? ORDER BY rowid",
         from, to).toArray();
-        return this.response(mode === "rowid-range" ? rows.map(row => ({rowid:row.rowid, data:JSON.parse(row.data)})) : rows.map(row => JSON.parse(row.data)));}
+        //return this.response(mode === "rowid-range" ? rows.map(row => ({rowid:row.rowid, data:JSON.parse(row.data)})) : rows.map(row => JSON.parse(row.data)));}
+        return this.response(mode === "rowid-range" ? rows.map(row => [row.rowid, ...JSON.parse(row.data)]) : rows.map(row => JSON.parse(row.data)));}
       if (mode === "all")
         return this.response(this.snapshot());
       if (mode === "max")
         return this.response(this.sql.exec("SELECT MAX(rowid) AS maxrowid FROM strokes").toArray()[0].maxrowid ?? 0);
       if (mode === "last") {
         const rows = this.sql.exec("SELECT rowid, data FROM strokes ORDER BY rowid DESC LIMIT 1").toArray();
-        return this.response(rows.length ? {rowid:rows[0].rowid, data:JSON.parse(rows[0].data)} : null);}
+        //return this.response(rows.length ? {rowid:rows[0].rowid, data:JSON.parse(rows[0].data)} : null);}
+        return this.response(rows.length ? [rows[0].rowid, ...JSON.parse(rows[0].data)] : null);}
       if (mode === "count")
         return this.response(this.sql.exec("SELECT COUNT(*) AS count FROM strokes").toArray()[0].count);
       return this.response("Unknown read mode", 400);
     }
 
     // INSERT: 1 VARIATION (allows one or multiple strokes)
-    if (path === "/sql/append") {
+    if (path.startsWith("/sql/append")) {
       const from = number("from");
       let lines; try {lines = JSON.parse(params.get("data").replace(/,\s*([\]}])/g, "$1"));} catch {return this.response("Invalid append JSON data", 400);}
       if (from === null || !this.validLines(lines)) return this.response("Invalid append parameters (maxAppend=" + maxAppend + ")", 400);
@@ -253,8 +259,9 @@ export class Canvas extends DurableObject {
         current = this.sql.exec("SELECT COALESCE(MAX(rowid), 0) AS maxrowid FROM strokes").toArray()[0].maxrowid; //****could change (for consistency with code above) to "SELECT MAX(rowid) AS maxrowid FROM strokes"
         if (from !== current) return;
 
-        for (const line of lines) this.sql.exec("INSERT INTO strokes (data) VALUES (?)", JSON.stringify(line));
-        //this.sql.exec("INSERT INTO strokes (data) VALUES " + lines.map(() => "(?)").join(","), ...lines.map(line => JSON.stringify(line)));
+        for (const line of lines) {const lineColor = "#000000";
+          this.sql.exec("INSERT INTO strokes (color, data) VALUES (?, ?)", lineColor, JSON.stringify(line));}
+          //this.sql.exec("INSERT INTO strokes (data) VALUES " + lines.map(() => "(?)").join(","), ...lines.map(line => JSON.stringify(line)));}
 
       });
       if (from !== current) return this.response({error:"Stale anchor", maxrowid:current}, 409);
@@ -263,7 +270,7 @@ export class Canvas extends DurableObject {
     }
 
     // DELETE: 3 variations
-    if (path === "/sql/delete") {
+    if (path.startsWith("/sql/delete")) {
       const from = number("from");
       const to = number("to");
       if (from !== null && to !== null) {
@@ -291,8 +298,9 @@ export class Canvas extends DurableObject {
     // 1. Insert one or more lines
     if (m.type === "lines") {if (!this.validLines(m.lines)) {ws.send(JSON.stringify({type:"error", error: "Invalid ws-append parameters (maxAppend=" + maxAppend + ")"})); return;}
 
-      for (const line of m.lines) this.sql.exec("INSERT INTO strokes (data) VALUES (?)", JSON.stringify(line));
-      //this.sql.exec("INSERT INTO strokes (data) VALUES " + m.lines.map(() => "(?)").join(","), ...m.lines.map(line => JSON.stringify(line)));
+      for (const line of m.lines) {const lineColor = "#000000";
+        this.sql.exec("INSERT INTO strokes (color, data) VALUES (?, ?)", lineColor, JSON.stringify(line));}
+        //this.sql.exec("INSERT INTO strokes (data) VALUES " + m.lines.map(() => "(?)").join(","), ...m.lines.map(line => JSON.stringify(line)));}
 
       for (const socket of this.ctx.getWebSockets()) if (socket !== ws && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(m));
     }
