@@ -18,7 +18,7 @@ export default {
 <h2>Four recommended operations</h2>
 <p>AI agents should normally limit themselves to these same four operations available to human users:</p>
 <ul>
-<li><b>Read:</b> <code>/sql/read?mode=all</code> — returns all lines as a JSON array (or add &html to request an HTML response instead).</li>
+<li><b>Read:</b> <code>/sql/read?mode=all</code> — returns all lines as a JSON array (or add &amp;html to request an HTML response instead).</li>
 <li><b>Get Max:</b> <code>/sql/read?mode=max</code> — gets the maximum rowid used by append to detect stale requests.</li>
 <li><b>Append:</b> <code>/sql/append</code> — appends one or more lines without replacing existing lines. Requires <code>from</code> and <code>data</code> parameters. The <code>from</code> value must equal the current maximum rowid (0 if empty) or else Error 409 results.</li>
 <li><b>Clear:</b> <code>/sql/delete</code> — deletes the entire drawing. Only do this when explicitly requested.</li>
@@ -85,23 +85,46 @@ button { position:fixed; top:12px; right:12px; padding:6px 6px; }
 const c=document.getElementById("c"), ctx=c.getContext("2d");
 let strokes=[], last=null, ready=false;
 
+let scMult=1;    //DEVELOPER CONSOLE FEATURE: set scale different from display-fill
+let sc=1;
+let ox=0, oy=0;  //DEVELOPER CONSOLE FEATURE: move origin away from top-left
 function draw(s) {
   ctx.beginPath();
-  ctx.moveTo(s[0]*c.clientWidth,s[1]*c.clientHeight);
-  ctx.lineTo(s[2]*c.clientWidth,s[3]*c.clientHeight);
+  //ctx.moveTo(ox + s[0]*c.clientWidth, oy + s[1]*c.clientHeight);
+  //ctx.lineTo(ox + s[2]*c.clientWidth, oy + s[3]*c.clientHeight);
+  ctx.moveTo(ox + s[0]*sc, oy + s[1]*sc);
+  ctx.lineTo(ox + s[2]*sc, oy + s[3]*sc);
   ctx.stroke();
 }
 
+let TOL = -1;    //DEVELOPER CONSOLE FEATURE: set positive (try 1e-12) to draw as arcs instead of lines
 function redraw() {
-  c.width=c.clientWidth*devicePixelRatio;
-  c.height=c.clientHeight*devicePixelRatio;
-  ctx.scale(devicePixelRatio,devicePixelRatio);
+  c.width  = c.clientWidth *devicePixelRatio;
+  c.height = c.clientHeight*devicePixelRatio;
+  ctx.scale(devicePixelRatio, devicePixelRatio);
+  sc = scMult*(Math.min(c.clientWidth, c.clientHeight));
+  //ox = (c.clientWidth - sc)/2, oy = (c.clientHeight - sc)/2;  //uncomment this to center the square (or leave 0,0 to align 0,0 with top-left screen corner)
   ctx.lineWidth=2;
   ctx.lineCap="round";
   ctx.strokeStyle="black";
-  strokes.forEach(draw);
-}
+  if (TOL < 0) strokes.forEach(draw);
+  else {for (let i = 1; i < strokes.length; i++) {if (strokes[i-1][2] === strokes[i][0] && strokes[i-1][3] === strokes[i][1]) {
 
+        const   bx = strokes[i-1][2] - strokes[i-1][0], by = strokes[i-1][3] - strokes[i-1][1]; const b2 = bx * bx + by * by;
+        const   cx = strokes[i  ][2] - strokes[i-1][0], cy = strokes[i  ][3] - strokes[i-1][1]; const c2 = cx * cx + cy * cy;
+        const   d  = 2 * (by * cx - bx * cy);                                             // d = -2 * cross(b, c)
+
+        ctx.beginPath();
+        if (Math.abs(d) > TOL * (b2 + c2)) {const dinv = 1 / d;
+          const rx = (cy * b2 - by * c2) * dinv,        ry = (bx * c2 - cx * b2) * dinv;  // Negative Circumcenter relative to P0
+          ctx.arc(ox + (strokes[i-1][0] - rx)*sc, oy + (strokes[i-1][1] - ry)*sc, (Math.hypot(rx, ry))*sc, Math.atan2(ry, rx), Math.atan2(cy + ry, cx + rx), d > 0);
+        } else {
+          ctx.moveTo(ox + strokes[i-1][0]*sc, oy + strokes[i-1][1]*sc);
+          ctx.lineTo(ox + strokes[i  ][0]*sc, oy + strokes[i  ][1]*sc);
+          ctx.lineTo(ox + strokes[i  ][2]*sc, oy + strokes[i  ][3]*sc);
+        }
+        ctx.stroke();}}}
+}
 window.onresize=redraw;
 redraw();
 
@@ -138,14 +161,16 @@ ws.onerror=()=>{ ready=false; last=null; };
 
 c.onpointerdown=e=>{
   if(!ready || ws.readyState!==WebSocket.OPEN) return;
-  last=[e.offsetX/c.clientWidth,e.offsetY/c.clientHeight];
+  //last=[e.offsetX/c.clientWidth, e.offsetY/c.clientHeight];
+  last=[(e.offsetX - ox)/sc, (e.offsetY - oy)/sc];
   c.setPointerCapture(e.pointerId);
 };
 
 c.onpointermove=e=>{
   if(!last || !ready || ws.readyState!==WebSocket.OPEN || e.buttons!==1) return;
 
-  const next=[e.offsetX/c.clientWidth,e.offsetY/c.clientHeight];
+  //const next=[e.offsetX/c.clientWidth, e.offsetY/c.clientHeight];
+  const next=[(e.offsetX - ox)/sc, (e.offsetY - oy)/sc];
   const line=[...last,...next];
 
   strokes.push(line);
@@ -212,7 +237,7 @@ export class Canvas extends DurableObject {
   }
   validLine(line) {
     return Array.isArray(line) && line.length === 4 &&
-      line.every(n => typeof n === "number" && Number.isFinite(n) && n >= 0 && n <= 1);
+      line.every(n => typeof n === "number" && Number.isFinite(n) && n >= 0 && n <= 2); //**** using 2 so full display drawings usually get saved on server
   }
   validLines(lines) {if (Array.isArray(lines) && lines.length > maxAppend) console.log("preventing append with many lines");
     return Array.isArray(lines) && lines.length > 0 && lines.length <= maxAppend && lines.every(line => this.validLine(line));
