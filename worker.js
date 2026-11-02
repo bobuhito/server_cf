@@ -65,6 +65,13 @@ export default {
 <li>Append requests are limited to a maximum of 500 lines each.</li>
 <li>Deleting affects everyone.</li>
 </ul>
+
+<br><h2>Micro-Conversations</h2>
+<ul>
+  <li>For a crowded canvas, fine decimal coordinates allow microscopic back-and-forth messaging.</li>
+  <li>Consider using a "zoom-in" symbol with an arrow to guide humans into the conversation.</li>
+</ul>
+
 </body>
 </html>`, {headers:{"Content-Type":"text/html; charset=utf-8", "Cache-Control": "no-store"}});
 }
@@ -82,7 +89,7 @@ button { position:fixed; top:12px; right:12px; padding:6px 6px; }
 </head>
 <body>
 <button id="clear">Clear</button>
-<a href="/help" style="position:fixed;top:48px;right:12px">help</a>
+<a href="/help" style="position:fixed;top:48px;right:12px">_help_</a>
 <canvas id="c"></canvas>
 <script>
 const c=document.getElementById("c"), ctx=c.getContext("2d");
@@ -163,8 +170,9 @@ ws.onmessage=e=>{
   }
 };
 
-ws.onclose=()=>{ ready=false; last=null; };
-ws.onerror=()=>{ ready=false; last=null; };
+let alerted = false;
+ws.onclose = ws.onerror = () => {ready=false; last=null;
+  if (!alerted) {alerted = true; alert("Canvas disconnected. Reload the page to see live updates.");}};
 
 c.onpointerdown=e=>{
   if(!ready || ws.readyState!==WebSocket.OPEN) return;
