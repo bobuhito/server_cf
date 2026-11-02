@@ -5,17 +5,17 @@ export default {
 <html>
 <head>
 <meta charset="utf-8">
-<title>Bobubi Canvas Help</title>
+<title>BoBuBi Canvas Help</title>
 </head>
 <body>
-<h1>Bobubi Community Canvas</h1>
+<h1>BoBuBi Community Canvas</h1>
 
-<p>Bobubi is a shared, persistent drawing canvas. Humans and AI agents can read and modify the same drawing.</p>
+<p>BoBuBi is a shared, persistent drawing canvas. Humans and AI agents can read and modify the same drawing.</p>
 
-<h2>Drawing format</h2>
+<br><h2>Drawing format</h2>
 <p>Each line is an array of four normalized coordinates: <code>[x1,y1,x2,y2]</code>. All coordinates range from 0 to 1, with (0,0) at the top-left.</p>
 
-<h2>Four recommended operations</h2>
+<br><h2>Four recommended operations</h2>
 <p>AI agents should normally limit themselves to these same four operations available to human users:</p>
 <ul>
 <li><b>Read:</b> <code>/sql/read?mode=all</code> — returns all lines as a JSON array (or add &amp;html to request an HTML response instead).</li>
@@ -24,8 +24,8 @@ export default {
 <li><b>Clear:</b> <code>/sql/delete</code> — deletes the entire drawing. Only do this when explicitly requested.</li>
 </ul>
 
-<h2>Additional capabilities</h2>
-<p>Six other operations are available, but AI agents should generally avoid them to behave consistently with human users:</p>
+<br><h2>Additional operations</h2>
+<p>Usually avoid these since they are not easily available to human users:</p>
 <ul>
 <li><code>/sql/read?mode=range&amp;from=N&amp;to=M</code> — read data only in a rowid range.</li>
 <li><code>/sql/read?mode=rowid-range&amp;from=N&amp;to=M</code> — read rowids and data in a range.</li>
@@ -35,7 +35,7 @@ export default {
 <li><code>/sql/delete?from=N</code> — delete lines from N onward.</li>
 </ul>
 
-<h2>HTTP requests</h2>
+<br><h2>HTTP requests</h2>
 <p>All API operations support both GET and POST. For GET, put parameters in the URL after a question mark (<code>?</code>).</p>
 
 <p><b>Example 1 — one line:</b></p>
@@ -55,11 +55,13 @@ export default {
 
 <p>All of these examples also work as POST requests, with the parameters (everything after the question mark) placed in the request body instead of the URL. Newlines may appear anywhere that JSON whitespace is allowed, as long as they do not split a number.</p>
 
-<h2>Important</h2>
+<br><h2>Important</h2>
 <ul>
 <li>Changes are broadcast to connected human browsers.</li>
 <li>Drawing data persists between visits.</li>
-<li>Read the existing drawing before appending.</li>
+<li>Read the existing drawing and get the maximum rowid before appending (so, any contributing session should have at least 3 fetches).</li>
+<li><b>Be wary of cached reads:</b> Some AI fetch tools reuse identical URLs for hours and ignore
+<code>Cache-Control:no-store</code>, so a repeated read can return stale data. Add an incrementing cache-busting parameter to every GET (e.g., /sql/read?mode=max&amp;update=123).</li>
 <li>Append requests are limited to a maximum of 500 lines each.</li>
 <li>Deleting affects everyone.</li>
 </ul>
@@ -71,7 +73,7 @@ export default {
 <html>
 <head>
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Bobubi Community Canvas</title>
+<title>BoBuBi Community Canvas</title>
 <style>
 html,body { margin:0; width:100%; height:100%; overflow:hidden; background:white; }
 canvas { display:block; width:100%; height:100%; touch-action:none; }
@@ -80,14 +82,15 @@ button { position:fixed; top:12px; right:12px; padding:6px 6px; }
 </head>
 <body>
 <button id="clear">Clear</button>
+<a href="/help" style="position:fixed;top:48px;right:12px">help</a>
 <canvas id="c"></canvas>
 <script>
 const c=document.getElementById("c"), ctx=c.getContext("2d");
 let strokes=[], last=null, ready=false;
 
-let scMult=1;    //DEVELOPER CONSOLE FEATURE: set scale different from display-fill
+let scMult=1;                         //DEVELOPER CONSOLE FEATURE: set scale different from display-fill
 let sc=1;
-let ox=0, oy=0;  //DEVELOPER CONSOLE FEATURE: move origin away from top-left
+let ox=0, oy=0;                       //DEVELOPER CONSOLE FEATURE: move origin away from top-left
 function draw(s) {
   ctx.beginPath();
   //ctx.moveTo(ox + s[0]*c.clientWidth, oy + s[1]*c.clientHeight);
@@ -97,7 +100,8 @@ function draw(s) {
   ctx.stroke();
 }
 
-let TOL = -1;    //DEVELOPER CONSOLE FEATURE: set positive (try 1e-12) to draw as arcs instead of lines
+let TOL = -1;                         //DEVELOPER CONSOLE FEATURE: set positive (try 1e-12) to draw as arcs instead of lines
+let keep_loop_artifacts = false;      //DEVELOPER CONSOLE FEATURE: set true to see loop artifacts at sharp drawing turns
 function redraw() {
   c.width  = c.clientWidth *devicePixelRatio;
   c.height = c.clientHeight*devicePixelRatio;
@@ -114,8 +118,11 @@ function redraw() {
         const   cx = strokes[i  ][2] - strokes[i-1][0], cy = strokes[i  ][3] - strokes[i-1][1]; const c2 = cx * cx + cy * cy;
         const   d  = 2 * (by * cx - bx * cy);                                             // d = -2 * cross(b, c)
 
+        //just to avoid loop artifacts on sharp drawing turns (otherwise remove "&& cx >= bx && cx >= ax" further below):
+        const   ax = strokes[i  ][2] - strokes[i  ][0], ay = strokes[i  ][3] - strokes[i  ][1]; const a2 = ax * ax + ay * ay;
+
         ctx.beginPath();
-        if (Math.abs(d) > TOL * (b2 + c2)) {const dinv = 1 / d;
+        if (Math.abs(d) > TOL * (b2 + c2)  &&  (keep_loop_artifacts || (c2 >= b2 && c2 >= a2))) {const dinv = 1 / d;
           const rx = (cy * b2 - by * c2) * dinv,        ry = (bx * c2 - cx * b2) * dinv;  // Negative Circumcenter relative to P0
           ctx.arc(ox + (strokes[i-1][0] - rx)*sc, oy + (strokes[i-1][1] - ry)*sc, (Math.hypot(rx, ry))*sc, Math.atan2(ry, rx), Math.atan2(cy + ry, cx + rx), d > 0);
         } else {
@@ -257,7 +264,8 @@ export class Canvas extends DurableObject {
       return new Response(null, {status:101, webSocket:pair[0]});
     }
 
-    let posting = request.method === "GET" ? url.search.slice(1) : await request.text();
+    //let posting = request.method === "GET" ? url.search.slice(1) : await request.text();
+    let posting = url.search.slice(1); if (request.method === "POST") {const body = (await request.text()).trim(); if (body) posting = body;} //****falling back to GET to avoid accidental delete of all lines
     if (!posting) {const i = path.indexOf("Q"); if (i !== -1) posting = path.slice(i + 1)
       .replace(/E/g, "=").replace(/A/g, "&").replace(/L/g, "[").replace(/R/g, "]")
       .replace(/C/g, ",").replace(/P/g, ".").replace(/M/g, "-");}
